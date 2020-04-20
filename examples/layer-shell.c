@@ -80,18 +80,6 @@ static void draw(void) {
 
 	long ms = (ts.tv_sec - demo.last_frame.tv_sec) * 1000 +
 		(ts.tv_nsec - demo.last_frame.tv_nsec) / 1000000;
-	int inc = (demo.dec + 1) % 3;
-
-	if (!buttons) {
-		demo.color[inc] += ms / 2000.0f;
-		demo.color[demo.dec] -= ms / 2000.0f;
-
-		if (demo.color[demo.dec] < 0.0f) {
-			demo.color[inc] = 1.0f;
-			demo.color[demo.dec] = 0.0f;
-			demo.dec = inc;
-		}
-	}
 
 	if (animate) {
 		frame += ms / 50.0;
@@ -105,11 +93,7 @@ static void draw(void) {
 	}
 
 	glViewport(0, 0, width, height);
-	if (buttons) {
-		glClearColor(1, 1, 1, alpha);
-	} else {
-		glClearColor(demo.color[0], demo.color[1], demo.color[2], alpha);
-	}
+	glClearColor(0.5, 0.5, 0.5, alpha);
 	glClear(GL_COLOR_BUFFER_BIT);
 
 	if (cur_x != -1 && cur_y != -1) {
@@ -194,10 +178,8 @@ static void wl_pointer_button(void *data, struct wl_pointer *wl_pointer,
 				extended = !extended;
 				if (extended) {
 					zwlr_layer_surface_v1_set_size(layer_surface, width, extended_height);
-					zwlr_layer_surface_v1_set_exclusive_zone(layer_surface, extended_height);
 				} else {
 					zwlr_layer_surface_v1_set_size(layer_surface, width, regular_height);
-					zwlr_layer_surface_v1_set_exclusive_zone(layer_surface, regular_height);
 				}
 			}
 		} else {
@@ -466,10 +448,7 @@ int main(int argc, char **argv) {
 		wl_cursor_theme_load(NULL, 16, shm);
 	assert(cursor_theme);
 	struct wl_cursor *cursor =
-		wl_cursor_theme_get_cursor(cursor_theme, "crosshair");
-	if (cursor == NULL) {
-		cursor = wl_cursor_theme_get_cursor(cursor_theme, "left_ptr");
-	}
+		wl_cursor_theme_get_cursor(cursor_theme, "left_ptr");
 	assert(cursor);
 	cursor_image = cursor->images[0];
 
