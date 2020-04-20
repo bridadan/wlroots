@@ -37,7 +37,6 @@ struct wl_callback *frame_callback;
 
 static uint32_t output = UINT32_MAX;
 
-static uint32_t anchor = 0;
 static const uint32_t regular_height = 40;
 static const uint32_t extended_height = 1080;
 static uint32_t width = 0, height = regular_height;
@@ -376,43 +375,12 @@ int main(int argc, char **argv) {
 	wlr_log_init(WLR_DEBUG, NULL);
 	char *namespace = "wlroots";
 	int32_t margin_right = 0, margin_bottom = 0, margin_left = 0;
-	bool found;
 	int c;
-	while ((c = getopt(argc, argv, "knw:h:o:a:m:t:")) != -1) {
+	while ((c = getopt(argc, argv, "kn:o:m:t:")) != -1) {
 		switch (c) {
 		case 'o':
 			output = atoi(optarg);
 			break;
-		case 'w':
-			width = atoi(optarg);
-			break;
-		case 'h':
-			height = atoi(optarg);
-			break;
-		case 'a': {
-			struct {
-				char *name;
-				uint32_t value;
-			} anchors[] = {
-				{ "top", ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP },
-				{ "bottom", ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM },
-				{ "left", ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT },
-				{ "right", ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT },
-			};
-			found = false;
-			for (size_t i = 0; i < sizeof(anchors) / sizeof(anchors[0]); ++i) {
-				if (strcmp(optarg, anchors[i].name) == 0) {
-					anchor |= anchors[i].value;
-					found = true;
-					break;
-				}
-			}
-			if (!found) {
-				fprintf(stderr, "invalid anchor %s\n", optarg);
-				return 1;
-			}
-			break;
-		}
 		case 't':
 			alpha = atof(optarg);
 			break;
@@ -495,7 +463,12 @@ int main(int argc, char **argv) {
 				wl_surface, wl_output, ZWLR_LAYER_SHELL_V1_LAYER_TOP, namespace);
 	assert(layer_surface);
 	zwlr_layer_surface_v1_set_size(layer_surface, width, height);
-	zwlr_layer_surface_v1_set_anchor(layer_surface, anchor);
+	zwlr_layer_surface_v1_set_anchor(
+		layer_surface,
+		ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT | \
+		ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | \
+		ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT
+	);
 	zwlr_layer_surface_v1_set_exclusive_zone(layer_surface, height);
 	zwlr_layer_surface_v1_set_margin(layer_surface,
 			margin_top, margin_right, margin_bottom, margin_left);
