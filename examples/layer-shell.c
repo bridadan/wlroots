@@ -75,7 +75,6 @@ static void draw(void) {
 	wl_callback_add_listener(frame_callback, &frame_listener, NULL);
 
 	eglSwapBuffers(egl.display, egl_surface);
-
 }
 
 static void layer_surface_configure(void *data,
@@ -390,11 +389,6 @@ int main(int argc, char **argv) {
 		wl_cursor_theme_get_cursor(cursor_theme, "left_ptr");
 	assert(cursor);
 	cursor_image = cursor->images[0];
-
-	cursor = wl_cursor_theme_get_cursor(cursor_theme, "tcross");
-	if (cursor == NULL) {
-		cursor = wl_cursor_theme_get_cursor(cursor_theme, "left_ptr");
-	}
 	assert(cursor);
 
 	cursor_surface = wl_compositor_create_surface(compositor);
