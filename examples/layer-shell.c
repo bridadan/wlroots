@@ -39,27 +39,17 @@ static uint32_t output = UINT32_MAX;
 
 static const uint32_t regular_height = 40;
 static const uint32_t extended_height = 1080;
+static const double alpha = 0.9;
 static uint32_t width = 0, height = regular_height;
-static int32_t margin_top = 0;
-static double alpha = 1.0;
 static bool run_display = true;
-static bool animate = false;
-static bool keyboard_interactive = false;
-static double frame = 0;
 static int cur_x = -1, cur_y = -1;
-static int buttons = 0;
 static bool extended = false;
 float regular_color[3] = { 0.5, 0.5, 0.5 };
 float extended_color[3] = { 0.2, 0.2, 0.2 };
+float color[3];
 
 struct wl_cursor_image *cursor_image;
 struct wl_surface *cursor_surface, *input_surface;
-
-static struct {
-	struct timespec last_frame;
-	float color[3];
-	int dec;
-} demo;
 
 static void draw(void);
 
@@ -76,25 +66,9 @@ static struct wl_callback_listener frame_listener = {
 
 static void draw(void) {
 	eglMakeCurrent(egl.display, egl_surface, egl_surface, egl.context);
-	struct timespec ts;
-	clock_gettime(CLOCK_MONOTONIC, &ts);
-
-	long ms = (ts.tv_sec - demo.last_frame.tv_sec) * 1000 +
-		(ts.tv_nsec - demo.last_frame.tv_nsec) / 1000000;
-
-	if (animate) {
-		frame += ms / 50.0;
-		int32_t old_top = margin_top;
-		margin_top = -(20 - ((int)frame % 20));
-		if (old_top != margin_top) {
-			zwlr_layer_surface_v1_set_margin(layer_surface,
-					margin_top, 0, 0, 0);
-			wl_surface_commit(wl_surface);
-		}
-	}
 
 	glViewport(0, 0, width, height);
-	glClearColor(demo.color[0], demo.color[1], demo.color[2], alpha);
+	glClearColor(color[0], color[1], color[2], alpha);
 	glClear(GL_COLOR_BUFFER_BIT);
 
 	frame_callback = wl_surface_frame(wl_surface);
@@ -102,7 +76,6 @@ static void draw(void) {
 
 	eglSwapBuffers(egl.display, egl_surface);
 
-	demo.last_frame = ts;
 }
 
 static void layer_surface_configure(void *data,
@@ -117,13 +90,13 @@ static void layer_surface_configure(void *data,
 	}
 
 	if (height == regular_height) {
-		demo.color[0] = regular_color[0];
-		demo.color[1] = regular_color[1];
-		demo.color[2] = regular_color[2];
+		color[0] = regular_color[0];
+		color[1] = regular_color[1];
+		color[2] = regular_color[2];
 	} else {
-		demo.color[0] = extended_color[0];
-		demo.color[1] = extended_color[1];
-		demo.color[2] = extended_color[2];
+		color[0] = extended_color[0];
+		color[1] = extended_color[1];
+		color[2] = extended_color[2];
 	}
 	zwlr_layer_surface_v1_ack_configure(surface, serial);
 }
@@ -202,7 +175,6 @@ static void wl_pointer_enter(void *data, struct wl_pointer *wl_pointer,
 static void wl_pointer_leave(void *data, struct wl_pointer *wl_pointer,
 		uint32_t serial, struct wl_surface *surface) {
 	cur_x = cur_y = -1;
-	buttons = 0;
 }
 
 static void wl_pointer_motion(void *data, struct wl_pointer *wl_pointer,
@@ -219,11 +191,8 @@ static void wl_pointer_button(void *data, struct wl_pointer *wl_pointer,
 				wlr_log(WLR_DEBUG, "exiting");
 				run_display = false;
 			} else {
-				buttons++;
 				handle_click();
 			}
-		} else {
-			buttons--;
 		}
 	} else {
 		assert(false && "Unknown surface");
@@ -375,33 +344,11 @@ static const struct wl_registry_listener registry_listener = {
 int main(int argc, char **argv) {
 	wlr_log_init(WLR_DEBUG, NULL);
 	char *namespace = "wlroots";
-	int32_t margin_right = 0, margin_bottom = 0, margin_left = 0;
 	int c;
-	while ((c = getopt(argc, argv, "kn:o:m:t:")) != -1) {
+	while ((c = getopt(argc, argv, "o:")) != -1) {
 		switch (c) {
 		case 'o':
 			output = atoi(optarg);
-			break;
-		case 't':
-			alpha = atof(optarg);
-			break;
-		case 'm': {
-			char *endptr = optarg;
-			margin_top = strtol(endptr, &endptr, 10);
-			assert(*endptr == ',');
-			margin_right = strtol(endptr + 1, &endptr, 10);
-			assert(*endptr == ',');
-			margin_bottom = strtol(endptr + 1, &endptr, 10);
-			assert(*endptr == ',');
-			margin_left = strtol(endptr + 1, &endptr, 10);
-			assert(!*endptr);
-			break;
-		}
-		case 'n':
-			animate = true;
-			break;
-		case 'k':
-			keyboard_interactive = true;
 			break;
 		default:
 			break;
@@ -432,9 +379,9 @@ int main(int argc, char **argv) {
 	}
 
 	wlr_log(WLR_DEBUG, "Starting");
-	demo.color[0] = regular_color[0];
-	demo.color[1] = regular_color[1];
-	demo.color[2] = regular_color[2];
+	color[0] = regular_color[0];
+	color[1] = regular_color[1];
+	color[2] = regular_color[2];
 
 	struct wl_cursor_theme *cursor_theme =
 		wl_cursor_theme_load(NULL, 16, shm);
@@ -471,10 +418,8 @@ int main(int argc, char **argv) {
 		ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT
 	);
 	zwlr_layer_surface_v1_set_exclusive_zone(layer_surface, height);
-	zwlr_layer_surface_v1_set_margin(layer_surface,
-			margin_top, margin_right, margin_bottom, margin_left);
 	zwlr_layer_surface_v1_set_keyboard_interactivity(
-			layer_surface, keyboard_interactive);
+			layer_surface, false);
 	zwlr_layer_surface_v1_add_listener(layer_surface,
 			&layer_surface_listener, layer_surface);
 	wl_surface_commit(wl_surface);
