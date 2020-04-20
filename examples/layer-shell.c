@@ -149,6 +149,7 @@ static void handle_click(void) {
 	} else {
 		zwlr_layer_surface_v1_set_size(layer_surface, width, regular_height);
 	}
+	wl_surface_commit(wl_surface);
 }
 
 static void wl_touch_down(void *data, struct wl_touch *wl_touch,
