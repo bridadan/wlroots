@@ -38,7 +38,9 @@ static uint32_t output = UINT32_MAX;
 
 static uint32_t layer = ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND;
 static uint32_t anchor = 0;
-static uint32_t width = 256, height = 256;
+static const uint32_t regular_height = 40;
+static const uint32_t extended_height = 1080;
+static uint32_t width = 0, height = regular_height;
 static int32_t margin_top = 0;
 static double alpha = 1.0;
 static bool run_display = true;
@@ -47,6 +49,7 @@ static bool keyboard_interactive = false;
 static double frame = 0;
 static int cur_x = -1, cur_y = -1;
 static int buttons = 0;
+static bool extended = false;
 
 struct wl_cursor_image *cursor_image;
 struct wl_surface *cursor_surface, *input_surface;
@@ -130,7 +133,9 @@ static void layer_surface_configure(void *data,
 		uint32_t serial, uint32_t w, uint32_t h) {
 	width = w;
 	height = h;
+	wlr_log(WLR_DEBUG, "layer_surface_configure: %u, %u", width, height);
 	if (egl_window) {
+		wlr_log(WLR_DEBUG, "resizing egl");
 		wl_egl_window_resize(egl_window, width, height, 0, 0);
 	}
 	zwlr_layer_surface_v1_ack_configure(surface, serial);
@@ -182,8 +187,18 @@ static void wl_pointer_button(void *data, struct wl_pointer *wl_pointer,
 	if (input_surface == wl_surface) {
 		if (state == WL_POINTER_BUTTON_STATE_PRESSED) {
 			if (button == BTN_RIGHT) {
+				wlr_log(WLR_DEBUG, "exiting");
+				run_display = false;
 			} else {
 				buttons++;
+				extended = !extended;
+				if (extended) {
+					zwlr_layer_surface_v1_set_size(layer_surface, width, extended_height);
+					zwlr_layer_surface_v1_set_exclusive_zone(layer_surface, extended_height);
+				} else {
+					zwlr_layer_surface_v1_set_size(layer_surface, width, regular_height);
+					zwlr_layer_surface_v1_set_exclusive_zone(layer_surface, regular_height);
+				}
 			}
 		} else {
 			buttons--;
@@ -334,11 +349,10 @@ static const struct wl_registry_listener registry_listener = {
 int main(int argc, char **argv) {
 	wlr_log_init(WLR_DEBUG, NULL);
 	char *namespace = "wlroots";
-	int exclusive_zone = 0;
 	int32_t margin_right = 0, margin_bottom = 0, margin_left = 0;
 	bool found;
 	int c;
-	while ((c = getopt(argc, argv, "knw:h:o:l:a:x:m:t:")) != -1) {
+	while ((c = getopt(argc, argv, "knw:h:o:l:a:m:t:")) != -1) {
 		switch (c) {
 		case 'o':
 			output = atoi(optarg);
@@ -348,9 +362,6 @@ int main(int argc, char **argv) {
 			break;
 		case 'h':
 			height = atoi(optarg);
-			break;
-		case 'x':
-			exclusive_zone = atoi(optarg);
 			break;
 		case 'l': {
 			struct {
@@ -449,6 +460,8 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 
+	wlr_log(WLR_DEBUG, "Starting");
+
 	struct wl_cursor_theme *cursor_theme =
 		wl_cursor_theme_load(NULL, 16, shm);
 	assert(cursor_theme);
@@ -481,7 +494,7 @@ int main(int argc, char **argv) {
 	assert(layer_surface);
 	zwlr_layer_surface_v1_set_size(layer_surface, width, height);
 	zwlr_layer_surface_v1_set_anchor(layer_surface, anchor);
-	zwlr_layer_surface_v1_set_exclusive_zone(layer_surface, exclusive_zone);
+	zwlr_layer_surface_v1_set_exclusive_zone(layer_surface, height);
 	zwlr_layer_surface_v1_set_margin(layer_surface,
 			margin_top, margin_right, margin_bottom, margin_left);
 	zwlr_layer_surface_v1_set_keyboard_interactivity(
