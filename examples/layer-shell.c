@@ -21,6 +21,7 @@ static struct wl_compositor *compositor;
 static struct wl_seat *seat;
 static struct wl_shm *shm;
 static struct wl_pointer *pointer;
+static struct wl_touch *touch;
 static struct wl_keyboard *keyboard;
 static struct xdg_wm_base *xdg_wm_base;
 static struct zwlr_layer_shell_v1 *layer_shell;
@@ -143,6 +144,47 @@ struct zwlr_layer_surface_v1_listener layer_surface_listener = {
 	.closed = layer_surface_closed,
 };
 
+static void handle_click(void) {
+	extended = !extended;
+	if (extended) {
+		zwlr_layer_surface_v1_set_size(layer_surface, width, extended_height);
+	} else {
+		zwlr_layer_surface_v1_set_size(layer_surface, width, regular_height);
+	}
+}
+
+static void wl_touch_down(void *data, struct wl_touch *wl_touch,
+		  uint32_t serial, uint32_t time, struct wl_surface *surface,
+		  int32_t id, wl_fixed_t x_w, wl_fixed_t y_w) {
+	handle_click();
+}
+
+static void wl_touch_up(void *data, struct wl_touch *wl_touch,
+		uint32_t serial, uint32_t time, int32_t id) {
+
+}
+
+static void wl_touch_motion(void *data, struct wl_touch *wl_touch,
+		    uint32_t time, int32_t id, wl_fixed_t x_w, wl_fixed_t y_w) {
+
+}
+
+static void wl_touch_frame(void *data, struct wl_touch *wl_touch) {
+
+}
+
+static void wl_touch_cancel(void *data, struct wl_touch *wl_touch) {
+
+}
+
+struct wl_touch_listener touch_listener = {
+	.down = wl_touch_down,
+	.up = wl_touch_up,
+	.motion = wl_touch_motion,
+	.frame = wl_touch_frame,
+	.cancel = wl_touch_cancel,
+};
+
 static void wl_pointer_enter(void *data, struct wl_pointer *wl_pointer,
 		uint32_t serial, struct wl_surface *surface,
 		wl_fixed_t surface_x, wl_fixed_t surface_y) {
@@ -179,12 +221,7 @@ static void wl_pointer_button(void *data, struct wl_pointer *wl_pointer,
 				run_display = false;
 			} else {
 				buttons++;
-				extended = !extended;
-				if (extended) {
-					zwlr_layer_surface_v1_set_size(layer_surface, width, extended_height);
-				} else {
-					zwlr_layer_surface_v1_set_size(layer_surface, width, regular_height);
-				}
+				handle_click();
 			}
 		} else {
 			buttons--;
@@ -272,6 +309,10 @@ static struct wl_keyboard_listener keyboard_listener = {
 
 static void seat_handle_capabilities(void *data, struct wl_seat *wl_seat,
 		enum wl_seat_capability caps) {
+	if ((caps & WL_SEAT_CAPABILITY_TOUCH)) {
+		touch = wl_seat_get_touch(wl_seat);
+		wl_touch_add_listener(touch, &touch_listener, NULL);
+	}
 	if ((caps & WL_SEAT_CAPABILITY_POINTER)) {
 		pointer = wl_seat_get_pointer(wl_seat);
 		wl_pointer_add_listener(pointer, &pointer_listener, NULL);
