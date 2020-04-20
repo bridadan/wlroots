@@ -50,6 +50,8 @@ static double frame = 0;
 static int cur_x = -1, cur_y = -1;
 static int buttons = 0;
 static bool extended = false;
+float regular_color[3] = { 0.5, 0.5, 0.5 };
+float extended_color[3] = { 0.2, 0.2, 0.2 };
 
 struct wl_cursor_image *cursor_image;
 struct wl_surface *cursor_surface, *input_surface;
@@ -93,16 +95,8 @@ static void draw(void) {
 	}
 
 	glViewport(0, 0, width, height);
-	glClearColor(0.5, 0.5, 0.5, alpha);
+	glClearColor(demo.color[0], demo.color[1], demo.color[2], alpha);
 	glClear(GL_COLOR_BUFFER_BIT);
-
-	if (cur_x != -1 && cur_y != -1) {
-		glEnable(GL_SCISSOR_TEST);
-		glScissor(cur_x, height - cur_y, 5, 5);
-		glClearColor(0, 0, 0, 1);
-		glClear(GL_COLOR_BUFFER_BIT);
-		glDisable(GL_SCISSOR_TEST);
-	}
 
 	frame_callback = wl_surface_frame(wl_surface);
 	wl_callback_add_listener(frame_callback, &frame_listener, NULL);
@@ -121,6 +115,16 @@ static void layer_surface_configure(void *data,
 	if (egl_window) {
 		wlr_log(WLR_DEBUG, "resizing egl");
 		wl_egl_window_resize(egl_window, width, height, 0, 0);
+	}
+
+	if (height == regular_height) {
+		demo.color[0] = regular_color[0];
+		demo.color[1] = regular_color[1];
+		demo.color[2] = regular_color[2];
+	} else {
+		demo.color[0] = extended_color[0];
+		demo.color[1] = extended_color[1];
+		demo.color[2] = extended_color[2];
 	}
 	zwlr_layer_surface_v1_ack_configure(surface, serial);
 }
@@ -443,6 +447,9 @@ int main(int argc, char **argv) {
 	}
 
 	wlr_log(WLR_DEBUG, "Starting");
+	demo.color[0] = regular_color[0];
+	demo.color[1] = regular_color[1];
+	demo.color[2] = regular_color[2];
 
 	struct wl_cursor_theme *cursor_theme =
 		wl_cursor_theme_load(NULL, 16, shm);
