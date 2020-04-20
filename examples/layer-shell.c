@@ -37,7 +37,6 @@ struct wl_callback *frame_callback;
 
 static uint32_t output = UINT32_MAX;
 
-static uint32_t layer = ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND;
 static uint32_t anchor = 0;
 static const uint32_t regular_height = 40;
 static const uint32_t extended_height = 1080;
@@ -379,7 +378,7 @@ int main(int argc, char **argv) {
 	int32_t margin_right = 0, margin_bottom = 0, margin_left = 0;
 	bool found;
 	int c;
-	while ((c = getopt(argc, argv, "knw:h:o:l:a:m:t:")) != -1) {
+	while ((c = getopt(argc, argv, "knw:h:o:a:m:t:")) != -1) {
 		switch (c) {
 		case 'o':
 			output = atoi(optarg);
@@ -390,30 +389,6 @@ int main(int argc, char **argv) {
 		case 'h':
 			height = atoi(optarg);
 			break;
-		case 'l': {
-			struct {
-				char *name;
-				enum zwlr_layer_shell_v1_layer value;
-			} layers[] = {
-				{ "background", ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND },
-				{ "bottom", ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM },
-				{ "top", ZWLR_LAYER_SHELL_V1_LAYER_TOP },
-				{ "overlay", ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY },
-			};
-			found = false;
-			for (size_t i = 0; i < sizeof(layers) / sizeof(layers[0]); ++i) {
-				if (strcmp(optarg, layers[i].name) == 0) {
-					layer = layers[i].value;
-					found = true;
-					break;
-				}
-			}
-			if (!found) {
-				fprintf(stderr, "invalid layer %s\n", optarg);
-				return 1;
-			}
-			break;
-		}
 		case 'a': {
 			struct {
 				char *name;
@@ -517,7 +492,7 @@ int main(int argc, char **argv) {
 	assert(wl_surface);
 
 	layer_surface = zwlr_layer_shell_v1_get_layer_surface(layer_shell,
-				wl_surface, wl_output, layer, namespace);
+				wl_surface, wl_output, ZWLR_LAYER_SHELL_V1_LAYER_TOP, namespace);
 	assert(layer_surface);
 	zwlr_layer_surface_v1_set_size(layer_surface, width, height);
 	zwlr_layer_surface_v1_set_anchor(layer_surface, anchor);
