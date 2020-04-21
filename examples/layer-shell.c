@@ -18,94 +18,124 @@
 
 static struct wl_display *display;
 static struct wl_compositor *compositor;
-static struct wl_seat *seat;
 static struct wl_shm *shm;
-static struct wl_pointer *pointer;
-static struct wl_touch *touch;
-static struct wl_keyboard *keyboard;
 static struct xdg_wm_base *xdg_wm_base;
 static struct zwlr_layer_shell_v1 *layer_shell;
 
-struct zwlr_layer_surface_v1 *layer_surface;
-static struct wl_output *wl_output;
-
-struct wl_surface *wl_surface;
 struct wlr_egl egl;
-struct wl_egl_window *egl_window;
-struct wlr_egl_surface *egl_surface;
 struct wl_callback *frame_callback;
 
-static uint32_t output = UINT32_MAX;
-
 static const uint32_t regular_height = 40;
-static const uint32_t extended_height = 1080;
 static const double alpha = 0.9;
-static uint32_t width = 0, height = regular_height;
+static uint32_t height = regular_height;
 static bool run_display = true;
-static int cur_x = -1, cur_y = -1;
 static bool extended = false;
 float regular_color[3] = { 0.5, 0.5, 0.5 };
 float extended_color[3] = { 0.2, 0.2, 0.2 };
 float color[3];
 
-struct wl_cursor_image *cursor_image;
-struct wl_surface *cursor_surface, *input_surface;
+struct bar_output {
+	struct wl_egl_window *egl_window;
+	struct wlr_egl_surface *egl_surface;
+	struct wl_output *output;
+	struct wl_surface *surface;
+	struct wl_list link;
+	struct zwlr_layer_surface_v1 *layer_surface;
 
-static void draw(void);
+	uint32_t width, height;
+	int32_t scale;
+};
+
+struct touch_slot {
+	int32_t id;
+	uint32_t time;
+	struct bar_output *output;
+	double start_x, start_y;
+	double x, y;
+};
+
+struct bar_touch {
+	struct wl_touch *touch;
+	struct touch_slot slots[16];
+};
+
+struct bar_pointer {
+	struct wl_pointer *pointer;
+	struct wl_cursor_theme *cursor_theme;
+	struct wl_cursor_image *cursor_image;
+	struct wl_surface *cursor_surface;
+	struct bar_output *current;
+	int x, y;
+	uint32_t serial;
+};
+
+struct bar_seat {
+	uint32_t wl_name;
+	struct wl_seat *wl_seat;
+	struct bar_pointer pointer;
+	struct bar_touch touch;
+	struct wl_list link; // bar_seat:link
+};
+
+static struct wl_list bar_outputs;
+static struct wl_list bar_seats;
+static void draw(struct bar_output* output);
 
 static void surface_frame_callback(
 		void *data, struct wl_callback *cb, uint32_t time) {
 	wl_callback_destroy(cb);
 	frame_callback = NULL;
-	draw();
+	draw((struct bar_output*) data);
 }
 
 static struct wl_callback_listener frame_listener = {
 	.done = surface_frame_callback
 };
 
-static void draw(void) {
-	eglMakeCurrent(egl.display, egl_surface, egl_surface, egl.context);
+static void draw(struct bar_output *output) {
+	eglMakeCurrent(egl.display, output->egl_surface, output->egl_surface, egl.context);
 
-	glViewport(0, 0, width, height);
+	glViewport(0, 0, output->width, output->height);
 	glClearColor(color[0], color[1], color[2], alpha);
 	glClear(GL_COLOR_BUFFER_BIT);
 
-	frame_callback = wl_surface_frame(wl_surface);
-	wl_callback_add_listener(frame_callback, &frame_listener, NULL);
+	frame_callback = wl_surface_frame(output->surface);
+	wl_callback_add_listener(frame_callback, &frame_listener, output);
 
-	eglSwapBuffers(egl.display, egl_surface);
+	eglSwapBuffers(egl.display, output->egl_surface);
 }
 
 static void layer_surface_configure(void *data,
 		struct zwlr_layer_surface_v1 *surface,
 		uint32_t serial, uint32_t w, uint32_t h) {
-	width = w;
-	height = h;
-	wlr_log(WLR_DEBUG, "layer_surface_configure: %u, %u", width, height);
-	if (egl_window) {
+	struct bar_output *output = data;
+	output->width = w;
+	output->height = h;
+	wlr_log(WLR_DEBUG, "layer_surface_configure: %u, %u", output->width, output->height);
+	if (output->egl_window) {
 		wlr_log(WLR_DEBUG, "resizing egl");
-		wl_egl_window_resize(egl_window, width, height, 0, 0);
+		wl_egl_window_resize(output->egl_window, output->width, output->height, 0, 0);
 	}
 
-	if (height == regular_height) {
-		color[0] = regular_color[0];
-		color[1] = regular_color[1];
-		color[2] = regular_color[2];
-	} else {
+	if (extended) {
 		color[0] = extended_color[0];
 		color[1] = extended_color[1];
 		color[2] = extended_color[2];
+	} else {
+		color[0] = regular_color[0];
+		color[1] = regular_color[1];
+		color[2] = regular_color[2];
 	}
-	zwlr_layer_surface_v1_ack_configure(surface, serial);
+	zwlr_layer_surface_v1_ack_configure(output->layer_surface, serial);
 }
 
 static void layer_surface_closed(void *data,
 		struct zwlr_layer_surface_v1 *surface) {
-	wlr_egl_destroy_surface(&egl, egl_surface);
-	wl_egl_window_destroy(egl_window);
-	zwlr_layer_surface_v1_destroy(surface);
-	wl_surface_destroy(wl_surface);
+	struct bar_output *output = data;
+	wlr_egl_destroy_surface(&egl, output->egl_surface);
+	wl_egl_window_destroy(output->egl_window);
+	zwlr_layer_surface_v1_destroy(output->layer_surface);
+	wl_surface_destroy(output->surface);
 	run_display = false;
 }
 
@@ -114,6 +144,7 @@ struct zwlr_layer_surface_v1_listener layer_surface_listener = {
 	.closed = layer_surface_closed,
 };
 
+/*
 static void handle_click(void) {
 	extended = !extended;
 	if (extended) {
@@ -123,79 +154,97 @@ static void handle_click(void) {
 	}
 	wl_surface_commit(wl_surface);
 }
+*/
 
-static void wl_touch_down(void *data, struct wl_touch *wl_touch,
-		  uint32_t serial, uint32_t time, struct wl_surface *surface,
-		  int32_t id, wl_fixed_t x_w, wl_fixed_t y_w) {
-	handle_click();
+static void update_cursor(struct bar_seat *seat) {
+	struct bar_pointer *pointer = &seat->pointer;
+	if (!pointer || !pointer->cursor_surface) {
+		return;
+	}
+	if (pointer->cursor_theme) {
+		wl_cursor_theme_destroy(pointer->cursor_theme);
+	}
+	//const char *cursor_theme = getenv("XCURSOR_THEME");
+	unsigned cursor_size = 24;
+	const char *env_cursor_size = getenv("XCURSOR_SIZE");
+	if (env_cursor_size && strlen(env_cursor_size) > 0) {
+		errno = 0;
+		char *end;
+		unsigned size = strtoul(env_cursor_size, &end, 10);
+		if (!*end && errno == 0) {
+			cursor_size = size;
+		}
+	}
+	int scale = pointer->current ? pointer->current->scale : 1;
+	wlr_log(WLR_DEBUG, "scale: %u", scale);
+	pointer->cursor_theme = wl_cursor_theme_load(
+		NULL, cursor_size * scale, shm);
+	assert(pointer->cursor_theme);
+	struct wl_cursor *cursor;
+	cursor = wl_cursor_theme_get_cursor(pointer->cursor_theme, "left_ptr");
+	pointer->cursor_image = cursor->images[0];
+	wl_surface_set_buffer_scale(pointer->cursor_surface, scale);
+	wl_surface_attach(pointer->cursor_surface,
+			wl_cursor_image_get_buffer(pointer->cursor_image), 0, 0);
+	wl_pointer_set_cursor(pointer->pointer, pointer->serial,
+			pointer->cursor_surface,
+			pointer->cursor_image->hotspot_x / scale,
+			pointer->cursor_image->hotspot_y / scale);
+	wl_surface_damage_buffer(pointer->cursor_surface, 0, 0,
+			INT32_MAX, INT32_MAX);
+	wl_surface_commit(pointer->cursor_surface);
 }
-
-static void wl_touch_up(void *data, struct wl_touch *wl_touch,
-		uint32_t serial, uint32_t time, int32_t id) {
-
-}
-
-static void wl_touch_motion(void *data, struct wl_touch *wl_touch,
-		    uint32_t time, int32_t id, wl_fixed_t x_w, wl_fixed_t y_w) {
-
-}
-
-static void wl_touch_frame(void *data, struct wl_touch *wl_touch) {
-
-}
-
-static void wl_touch_cancel(void *data, struct wl_touch *wl_touch) {
-
-}
-
-struct wl_touch_listener touch_listener = {
-	.down = wl_touch_down,
-	.up = wl_touch_up,
-	.motion = wl_touch_motion,
-	.frame = wl_touch_frame,
-	.cancel = wl_touch_cancel,
-};
 
 static void wl_pointer_enter(void *data, struct wl_pointer *wl_pointer,
 		uint32_t serial, struct wl_surface *surface,
 		wl_fixed_t surface_x, wl_fixed_t surface_y) {
-	struct wl_cursor_image *image;
-	image = cursor_image;
-	wl_surface_attach(cursor_surface,
-		wl_cursor_image_get_buffer(image), 0, 0);
-	wl_surface_damage(cursor_surface, 1, 0,
-		image->width, image->height);
-	wl_surface_commit(cursor_surface);
-	wl_pointer_set_cursor(wl_pointer, serial, cursor_surface,
-		image->hotspot_x, image->hotspot_y);
-	input_surface = surface;
+	struct bar_seat *seat = data;
+	struct bar_pointer *pointer = &seat->pointer;
+	pointer->serial = serial;
+	struct bar_output *output;
+	wl_list_for_each(output, &bar_outputs, link) {
+		if (output->surface == surface) {
+			pointer->current = output;
+			break;
+		}
+	}
+	update_cursor(seat);
 }
 
 static void wl_pointer_leave(void *data, struct wl_pointer *wl_pointer,
 		uint32_t serial, struct wl_surface *surface) {
-	cur_x = cur_y = -1;
+	struct bar_seat *seat = data;
+	seat->pointer.current = NULL;
 }
 
 static void wl_pointer_motion(void *data, struct wl_pointer *wl_pointer,
 		uint32_t time, wl_fixed_t surface_x, wl_fixed_t surface_y) {
-	cur_x = wl_fixed_to_int(surface_x);
-	cur_y = wl_fixed_to_int(surface_y);
+	struct bar_seat *seat = data;
+	seat->pointer.x = wl_fixed_to_int(surface_x);
+	seat->pointer.y = wl_fixed_to_int(surface_y);
+}
+
+static void process_hotspots(struct bar_output *output,
+		double x, double y, uint32_t button) {
+	x *= output->scale;
+	y *= output->scale;
+
+	/* click */
+	wlr_log(WLR_DEBUG, "Click at (%f, %f) with button %u", x, y, button);
 }
 
 static void wl_pointer_button(void *data, struct wl_pointer *wl_pointer,
 		uint32_t serial, uint32_t time, uint32_t button, uint32_t state) {
-	if (input_surface == wl_surface) {
-		if (state == WL_POINTER_BUTTON_STATE_PRESSED) {
-			if (button == BTN_RIGHT) {
-				wlr_log(WLR_DEBUG, "exiting");
-				run_display = false;
-			} else {
-				handle_click();
-			}
-		}
-	} else {
-		assert(false && "Unknown surface");
+	struct bar_seat *seat = data;
+	struct bar_pointer *pointer = &seat->pointer;
+	struct bar_output *output = pointer->current;
+	assert(output && "button with no active output");
+
+	if (state != WL_POINTER_BUTTON_STATE_PRESSED) {
+		return;
 	}
+
+	process_hotspots(output, pointer->x, pointer->y, button);
 }
 
 static void wl_pointer_axis(void *data, struct wl_pointer *wl_pointer,
@@ -234,59 +283,131 @@ struct wl_pointer_listener pointer_listener = {
 	.axis_discrete = wl_pointer_axis_discrete,
 };
 
-static void wl_keyboard_keymap(void *data, struct wl_keyboard *wl_keyboard,
-		uint32_t format, int32_t fd, uint32_t size) {
-	// Who cares
+static struct touch_slot *get_touch_slot(struct bar_touch *touch, int32_t id) {
+	ssize_t next = -1;
+	for (size_t i = 0; i < sizeof(touch->slots) / sizeof(*touch->slots); ++i) {
+		if (touch->slots[i].id == id) {
+			return &touch->slots[i];
+		}
+		if (next == -1 && !touch->slots[i].output) {
+			next = i;
+		}
+	}
+	if (next == -1) {
+		wlr_log(WLR_DEBUG, "Ran out of touch slots");
+		return NULL;
+	}
+	return &touch->slots[next];
 }
 
-static void wl_keyboard_enter(void *data, struct wl_keyboard *wl_keyboard,
-		uint32_t serial, struct wl_surface *surface, struct wl_array *keys) {
-	wlr_log(WLR_DEBUG, "Keyboard enter");
+static void wl_touch_down(void *data, struct wl_touch *wl_touch,
+		  uint32_t serial, uint32_t time, struct wl_surface *surface,
+		  int32_t id, wl_fixed_t x, wl_fixed_t y) {
+	struct bar_seat *seat = data;
+	struct bar_output *_output = NULL, *output = NULL;
+	wl_list_for_each(_output, &bar_outputs, link) {
+		if (_output->surface == surface) {
+			output = _output;
+			break;
+		}
+	}
+	if (!output) {
+		wlr_log(WLR_DEBUG, "Got touch event for unknown surface");
+		return;
+	}
+	struct touch_slot *slot = get_touch_slot(&seat->touch, id);
+	if (!slot) {
+		return;
+	}
+	slot->id = id;
+	slot->output = output;
+	slot->x = slot->start_x = wl_fixed_to_double(x);
+	slot->y = slot->start_y = wl_fixed_to_double(y);
+	slot->time = time;
 }
 
-static void wl_keyboard_leave(void *data, struct wl_keyboard *wl_keyboard,
-		uint32_t serial, struct wl_surface *surface) {
-	wlr_log(WLR_DEBUG, "Keyboard leave");
+static void wl_touch_up(void *data, struct wl_touch *wl_touch,
+		uint32_t serial, uint32_t time, int32_t id) {
+	struct bar_seat *seat = data;
+	struct touch_slot *slot = get_touch_slot(&seat->touch, id);
+	if (!slot) {
+		return;
+	}
+	if (time - slot->time < 500) {
+		// Tap, treat it like a pointer click
+		process_hotspots(slot->output, slot->x, slot->y, BTN_LEFT);
+	}
+	slot->output = NULL;
+
 }
 
-static void wl_keyboard_key(void *data, struct wl_keyboard *wl_keyboard,
-		uint32_t serial, uint32_t time, uint32_t key, uint32_t state) {
-	wlr_log(WLR_DEBUG, "Key event: %d %d", key, state);
+static void wl_touch_motion(void *data, struct wl_touch *wl_touch,
+		    uint32_t time, int32_t id, wl_fixed_t x, wl_fixed_t y) {
+	struct bar_seat *seat = data;
+	struct touch_slot *slot = get_touch_slot(&seat->touch, id);
+	if (!slot) {
+		return;
+	}
+	int prev_progress = (int)((slot->x - slot->start_x)
+			/ slot->output->width * 100);
+	slot->x = wl_fixed_to_double(x);
+	slot->y = wl_fixed_to_double(y);
+	// "progress" is a measure from 0..100 representing the fraction of the
+	// output the touch gesture has travelled, positive when moving to the right
+	// and negative when moving to the left.
+	int progress = (int)((slot->x - slot->start_x)
+			/ slot->output->width * 100);
+	if (abs(progress) / 20 != abs(prev_progress) / 20) {
+		// workspace_next(seat->bar, slot->output, progress - prev_progress < 0);
+	}
+
 }
 
-static void wl_keyboard_modifiers(void *data, struct wl_keyboard *wl_keyboard,
-		uint32_t serial, uint32_t mods_depressed, uint32_t mods_latched,
-		uint32_t mods_locked, uint32_t group) {
-	// Who cares
+static void wl_touch_frame(void *data, struct wl_touch *wl_touch) {
+
 }
 
-static void wl_keyboard_repeat_info(void *data, struct wl_keyboard *wl_keyboard,
-		int32_t rate, int32_t delay) {
-	// Who cares
+static void wl_touch_cancel(void *data, struct wl_touch *wl_touch) {
+	struct bar_seat *seat = data;
+	struct bar_touch *touch = &seat->touch;
+	for (size_t i = 0; i < sizeof(touch->slots) / sizeof(*touch->slots); ++i) {
+		touch->slots[i].output = NULL;
+	}
 }
 
-static struct wl_keyboard_listener keyboard_listener = {
-	.keymap = wl_keyboard_keymap,
-	.enter = wl_keyboard_enter,
-	.leave = wl_keyboard_leave,
-	.key = wl_keyboard_key,
-	.modifiers = wl_keyboard_modifiers,
-	.repeat_info = wl_keyboard_repeat_info,
+struct wl_touch_listener touch_listener = {
+	.down = wl_touch_down,
+	.up = wl_touch_up,
+	.motion = wl_touch_motion,
+	.frame = wl_touch_frame,
+	.cancel = wl_touch_cancel,
 };
 
 static void seat_handle_capabilities(void *data, struct wl_seat *wl_seat,
 		enum wl_seat_capability caps) {
-	if ((caps & WL_SEAT_CAPABILITY_TOUCH)) {
-		touch = wl_seat_get_touch(wl_seat);
-		wl_touch_add_listener(touch, &touch_listener, NULL);
+	struct bar_seat *seat = data;
+
+	bool have_pointer = caps & WL_SEAT_CAPABILITY_POINTER;
+	bool have_touch = caps & WL_SEAT_CAPABILITY_TOUCH;
+
+	if (!have_pointer && seat->pointer.pointer != NULL) {
+		wl_pointer_release(seat->pointer.pointer);
+		seat->pointer.pointer = NULL;
+	} else if (have_pointer && seat->pointer.pointer == NULL) {
+		seat->pointer.pointer = wl_seat_get_pointer(wl_seat);
+		if (run_display && !seat->pointer.cursor_surface) {
+			seat->pointer.cursor_surface =
+				wl_compositor_create_surface(compositor);
+			assert(seat->pointer.cursor_surface);
+		}
+		wl_pointer_add_listener(seat->pointer.pointer, &pointer_listener, seat);
 	}
-	if ((caps & WL_SEAT_CAPABILITY_POINTER)) {
-		pointer = wl_seat_get_pointer(wl_seat);
-		wl_pointer_add_listener(pointer, &pointer_listener, NULL);
-	}
-	if ((caps & WL_SEAT_CAPABILITY_KEYBOARD)) {
-		keyboard = wl_seat_get_keyboard(wl_seat);
-		wl_keyboard_add_listener(keyboard, &keyboard_listener, NULL);
+	if (!have_touch && seat->touch.touch != NULL) {
+		wl_touch_release(seat->touch.touch);
+		seat->touch.touch = NULL;
+	} else if (have_touch && seat->touch.touch == NULL) {
+		seat->touch.touch = wl_seat_get_touch(wl_seat);
+		wl_touch_add_listener(seat->touch.touch, &touch_listener, seat);
 	}
 }
 
@@ -300,33 +421,66 @@ const struct wl_seat_listener seat_listener = {
 	.name = seat_handle_name,
 };
 
+static void output_geometry(void *data, struct wl_output *wl_output, int32_t x,
+		int32_t y, int32_t width_mm, int32_t height_mm, int32_t subpixel,
+		const char *make, const char *model, int32_t transform) {
+	// Who cares
+}
+
+static void output_mode(void *data, struct wl_output *wl_output, uint32_t flags,
+		int32_t width, int32_t height, int32_t refresh) {
+	// Who cares
+}
+
+static void output_done(void *data, struct wl_output *wl_output) {
+	// Who cares
+}
+
+static void output_scale(void *data, struct wl_output *wl_output,
+		int32_t factor) {
+	struct bar_output *output = data;
+	wlr_log(WLR_DEBUG, "output scale %d", factor);
+	output->scale = factor;
+}
+struct wl_output_listener output_listener = {
+	.geometry = output_geometry,
+	.mode = output_mode,
+	.done = output_done,
+	.scale = output_scale,
+};
+
 static void handle_global(void *data, struct wl_registry *registry,
 		uint32_t name, const char *interface, uint32_t version) {
 	if (strcmp(interface, wl_compositor_interface.name) == 0) {
 		compositor = wl_registry_bind(registry, name,
-				&wl_compositor_interface, 1);
+				&wl_compositor_interface, 4);
 	} else if (strcmp(interface, wl_shm_interface.name) == 0) {
 		shm = wl_registry_bind(registry, name,
 				&wl_shm_interface, 1);
-	} else if (strcmp(interface, "wl_output") == 0) {
-		if (output != UINT32_MAX) {
-			if (!wl_output) {
-				wl_output = wl_registry_bind(registry, name,
-						&wl_output_interface, 1);
-			} else {
-				output--;
-			}
-		}
+	} else if (strcmp(interface, wl_output_interface.name) == 0) {
+		struct bar_output *output = calloc(1, sizeof(struct bar_output));
+		output->output = wl_registry_bind(registry, name,
+			&wl_output_interface, 3);
+		wl_list_insert(&bar_outputs, &output->link);
+		wl_output_add_listener(output->output, &output_listener, output);
+		wlr_log(WLR_DEBUG, "output listener");
 	} else if (strcmp(interface, wl_seat_interface.name) == 0) {
-		seat = wl_registry_bind(registry, name,
-				&wl_seat_interface, 1);
-		wl_seat_add_listener(seat, &seat_listener, NULL);
+		struct bar_seat *seat = calloc(1, sizeof(struct bar_seat));
+		if (!seat) {
+			wlr_log(WLR_DEBUG, "Failed to allocate bar_seat");
+			return;
+		}
+		seat->wl_name = name;
+		// NOTE this used version 3 in swaybar
+		seat->wl_seat = wl_registry_bind(registry, name, &wl_seat_interface, 3);
+		wl_seat_add_listener(seat->wl_seat, &seat_listener, seat);
+		wl_list_insert(&bar_seats, &seat->link);
 	} else if (strcmp(interface, zwlr_layer_shell_v1_interface.name) == 0) {
 		layer_shell = wl_registry_bind(
 				registry, name, &zwlr_layer_shell_v1_interface, 1);
 	} else if (strcmp(interface, xdg_wm_base_interface.name) == 0) {
 		xdg_wm_base = wl_registry_bind(
-				registry, name, &xdg_wm_base_interface, 1);
+				registry, name, &xdg_wm_base_interface, 2);
 	}
 }
 
@@ -342,12 +496,15 @@ static const struct wl_registry_listener registry_listener = {
 
 int main(int argc, char **argv) {
 	wlr_log_init(WLR_DEBUG, NULL);
+	wl_list_init(&bar_outputs);
+	wl_list_init(&bar_seats);
 	char *namespace = "wlroots";
 	int c;
-	while ((c = getopt(argc, argv, "o:")) != -1) {
+	while ((c = getopt(argc, argv, "h:")) != -1) {
 		switch (c) {
-		case 'o':
-			output = atoi(optarg);
+		case 'h':
+			printf("Help text here\n");
+			return 0;
 			break;
 		default:
 			break;
@@ -382,55 +539,58 @@ int main(int argc, char **argv) {
 	color[1] = regular_color[1];
 	color[2] = regular_color[2];
 
-	struct wl_cursor_theme *cursor_theme =
-		wl_cursor_theme_load(NULL, 16, shm);
-	assert(cursor_theme);
-	struct wl_cursor *cursor =
-		wl_cursor_theme_get_cursor(cursor_theme, "left_ptr");
-	assert(cursor);
-	cursor_image = cursor->images[0];
-	assert(cursor);
-
-	cursor_surface = wl_compositor_create_surface(compositor);
-	assert(cursor_surface);
 
 	EGLint attribs[] = { EGL_ALPHA_SIZE, 8, EGL_NONE };
 	wlr_egl_init(&egl, EGL_PLATFORM_WAYLAND_EXT, display,
 			attribs, WL_SHM_FORMAT_ARGB8888);
 
-	wl_surface = wl_compositor_create_surface(compositor);
-	assert(wl_surface);
 
-	layer_surface = zwlr_layer_shell_v1_get_layer_surface(layer_shell,
-				wl_surface, wl_output, ZWLR_LAYER_SHELL_V1_LAYER_TOP, namespace);
-	assert(layer_surface);
-	zwlr_layer_surface_v1_set_size(layer_surface, width, height);
-	zwlr_layer_surface_v1_set_anchor(
-		layer_surface,
-		ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT | \
-		ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | \
-		ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT
-	);
-	zwlr_layer_surface_v1_set_exclusive_zone(layer_surface, height);
-	zwlr_layer_surface_v1_set_keyboard_interactivity(
-			layer_surface, false);
-	zwlr_layer_surface_v1_add_listener(layer_surface,
-			&layer_surface_listener, layer_surface);
-	wl_surface_commit(wl_surface);
-	wl_display_roundtrip(display);
+	struct bar_output *output;
+	wl_list_for_each(output, &bar_outputs, link) {
+		output->surface = wl_compositor_create_surface(compositor);
+		assert(output->surface);
 
-	egl_window = wl_egl_window_create(wl_surface, width, height);
-	assert(egl_window);
-	egl_surface = wlr_egl_create_surface(&egl, egl_window);
-	assert(egl_surface);
+		output->layer_surface = zwlr_layer_shell_v1_get_layer_surface(
+			layer_shell,
+			output->surface,
+			output->output,
+			ZWLR_LAYER_SHELL_V1_LAYER_TOP,
+			namespace
+		);
+		assert(output->layer_surface);
 
-	wl_display_roundtrip(display);
-	draw();
+		zwlr_layer_surface_v1_set_size(
+			output->layer_surface,
+			output->width,
+			height
+		);
+		zwlr_layer_surface_v1_set_anchor(
+			output->layer_surface,
+			ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT | \
+			ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | \
+			ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT
+		);
+		zwlr_layer_surface_v1_set_exclusive_zone(output->layer_surface, height);
+		zwlr_layer_surface_v1_set_keyboard_interactivity(output->layer_surface, false);
+		zwlr_layer_surface_v1_add_listener(
+			output->layer_surface,
+			&layer_surface_listener,
+			output
+		);
+		wl_surface_commit(output->surface);
+		wl_display_roundtrip(display);
+
+		output->egl_window = wl_egl_window_create(output->surface, output->width, height);
+		assert(output->egl_window);
+		output->egl_surface = wlr_egl_create_surface(&egl, output->egl_window);
+		assert(output->egl_surface);
+		wl_display_roundtrip(display);
+		draw(output);
+	}
 
 	while (wl_display_dispatch(display) != -1 && run_display) {
 		// This space intentionally left blank
 	}
 
-	wl_cursor_theme_destroy(cursor_theme);
 	return 0;
 }
