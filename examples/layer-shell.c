@@ -27,12 +27,9 @@ struct wl_callback *frame_callback;
 
 static const uint32_t regular_height = 40;
 static const double alpha = 0.9;
-static uint32_t height = regular_height;
 static bool run_display = true;
-static bool extended = false;
 float regular_color[3] = { 0.5, 0.5, 0.5 };
 float extended_color[3] = { 0.2, 0.2, 0.2 };
-float color[3];
 
 struct bar_output {
 	struct wl_egl_window *egl_window;
@@ -43,7 +40,10 @@ struct bar_output {
 	struct zwlr_layer_surface_v1 *layer_surface;
 
 	uint32_t width, height;
+	uint32_t max_width, max_height;
 	int32_t scale;
+	bool extended;
+	float color[3];
 };
 
 struct touch_slot {
@@ -96,7 +96,7 @@ static void draw(struct bar_output *output) {
 	eglMakeCurrent(egl.display, output->egl_surface, output->egl_surface, egl.context);
 
 	glViewport(0, 0, output->width, output->height);
-	glClearColor(color[0], color[1], color[2], alpha);
+	glClearColor(output->color[0], output->color[1], output->color[2], alpha);
 	glClear(GL_COLOR_BUFFER_BIT);
 
 	frame_callback = wl_surface_frame(output->surface);
@@ -117,14 +117,14 @@ static void layer_surface_configure(void *data,
 		wl_egl_window_resize(output->egl_window, output->width, output->height, 0, 0);
 	}
 
-	if (extended) {
-		color[0] = extended_color[0];
-		color[1] = extended_color[1];
-		color[2] = extended_color[2];
+	if (output->extended) {
+		output->color[0] = extended_color[0];
+		output->color[1] = extended_color[1];
+		output->color[2] = extended_color[2];
 	} else {
-		color[0] = regular_color[0];
-		color[1] = regular_color[1];
-		color[2] = regular_color[2];
+		output->color[0] = regular_color[0];
+		output->color[1] = regular_color[1];
+		output->color[2] = regular_color[2];
 	}
 	zwlr_layer_surface_v1_ack_configure(output->layer_surface, serial);
 }
@@ -143,18 +143,6 @@ struct zwlr_layer_surface_v1_listener layer_surface_listener = {
 	.configure = layer_surface_configure,
 	.closed = layer_surface_closed,
 };
-
-/*
-static void handle_click(void) {
-	extended = !extended;
-	if (extended) {
-		zwlr_layer_surface_v1_set_size(layer_surface, width, extended_height);
-	} else {
-		zwlr_layer_surface_v1_set_size(layer_surface, width, regular_height);
-	}
-	wl_surface_commit(wl_surface);
-}
-*/
 
 static void update_cursor(struct bar_seat *seat) {
 	struct bar_pointer *pointer = &seat->pointer;
@@ -176,7 +164,6 @@ static void update_cursor(struct bar_seat *seat) {
 		}
 	}
 	int scale = pointer->current ? pointer->current->scale : 1;
-	wlr_log(WLR_DEBUG, "scale: %u", scale);
 	pointer->cursor_theme = wl_cursor_theme_load(
 		NULL, cursor_size * scale, shm);
 	assert(pointer->cursor_theme);
@@ -231,6 +218,12 @@ static void process_hotspots(struct bar_output *output,
 
 	/* click */
 	wlr_log(WLR_DEBUG, "Click at (%f, %f) with button %u", x, y, button);
+
+	output->extended = !output->extended;
+	wlr_log(WLR_DEBUG, "output: %p, extended: %d, height: %u, regular_height: %u, max_height: %u", output, output->extended, output->height, regular_height, output->max_height);
+	wlr_log(WLR_DEBUG, "new height: %u", output->extended ? output->max_height : regular_height);
+	zwlr_layer_surface_v1_set_size(output->layer_surface, output->width, output->extended ? output->max_height : regular_height);
+	wl_surface_commit(output->surface);
 }
 
 static void wl_pointer_button(void *data, struct wl_pointer *wl_pointer,
@@ -429,6 +422,9 @@ static void output_geometry(void *data, struct wl_output *wl_output, int32_t x,
 
 static void output_mode(void *data, struct wl_output *wl_output, uint32_t flags,
 		int32_t width, int32_t height, int32_t refresh) {
+	struct bar_output *output = data;
+	output->max_width = width;
+	output->max_height = height;
 	// Who cares
 }
 
@@ -535,9 +531,6 @@ int main(int argc, char **argv) {
 	}
 
 	wlr_log(WLR_DEBUG, "Starting");
-	color[0] = regular_color[0];
-	color[1] = regular_color[1];
-	color[2] = regular_color[2];
 
 
 	EGLint attribs[] = { EGL_ALPHA_SIZE, 8, EGL_NONE };
@@ -547,6 +540,9 @@ int main(int argc, char **argv) {
 
 	struct bar_output *output;
 	wl_list_for_each(output, &bar_outputs, link) {
+		output->color[0] = regular_color[0];
+		output->color[1] = regular_color[1];
+		output->color[2] = regular_color[2];
 		output->surface = wl_compositor_create_surface(compositor);
 		assert(output->surface);
 
@@ -559,10 +555,11 @@ int main(int argc, char **argv) {
 		);
 		assert(output->layer_surface);
 
+		wlr_log(WLR_DEBUG, "initial height: %u", regular_height);
 		zwlr_layer_surface_v1_set_size(
 			output->layer_surface,
 			output->width,
-			height
+			regular_height
 		);
 		zwlr_layer_surface_v1_set_anchor(
 			output->layer_surface,
@@ -570,7 +567,7 @@ int main(int argc, char **argv) {
 			ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | \
 			ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT
 		);
-		zwlr_layer_surface_v1_set_exclusive_zone(output->layer_surface, height);
+		zwlr_layer_surface_v1_set_exclusive_zone(output->layer_surface, regular_height);
 		zwlr_layer_surface_v1_set_keyboard_interactivity(output->layer_surface, false);
 		zwlr_layer_surface_v1_add_listener(
 			output->layer_surface,
@@ -580,7 +577,7 @@ int main(int argc, char **argv) {
 		wl_surface_commit(output->surface);
 		wl_display_roundtrip(display);
 
-		output->egl_window = wl_egl_window_create(output->surface, output->width, height);
+		output->egl_window = wl_egl_window_create(output->surface, output->width, regular_height);
 		assert(output->egl_window);
 		output->egl_surface = wlr_egl_create_surface(&egl, output->egl_window);
 		assert(output->egl_surface);
